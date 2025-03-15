@@ -42,6 +42,17 @@ def init_db():
                   timestamp TEXT,
                   status TEXT DEFAULT 'pending')''')
     
+    c.execute('''CREATE TABLE IF NOT EXISTS orders
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  username TEXT,
+                  product_id INTEGER,
+                  product_name TEXT,
+                  quantity INTEGER,
+                  address TEXT,
+                  status TEXT DEFAULT 'pending',
+                  timestamp TEXT)''')
+    
     c.execute("SELECT COUNT(*) FROM welcome_message")
     if c.fetchone()[0] == 0:
         c.execute("INSERT INTO welcome_message (message_text, photo_path) VALUES (?, ?)", 
@@ -160,7 +171,8 @@ def admin_panel(message):
         btn2 = types.KeyboardButton("🏪 Управление магазином")
         btn3 = types.KeyboardButton("📨 Рассылка")
         btn4 = types.KeyboardButton("💬 Ответить пользователю")
-        markup.add(btn1, btn2, btn3, btn4)
+        btn5 = types.KeyboardButton("📦 Управление заказами")
+        markup.add(btn1, btn2, btn3, btn4, btn5)
         bot.send_message(message.chat.id, "Панель администратора:", reply_markup=markup)
 
 @bot.message_handler(func=lambda message: message.text == "📊 Выгрузка пользователей")
@@ -345,6 +357,26 @@ def show_pending_questions(message):
             markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"reply_to_{q[0]}"))
         bot.send_message(message.chat.id, "Неотвеченные вопросы:", reply_markup=markup)
 
+@bot.message_handler(func=lambda message: message.text == "📦 Управление заказами")
+def manage_orders(message):
+    if message.from_user.id in ADMIN_IDS:
+        conn = sqlite3.connect('shop.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM orders WHERE status = 'pending'")
+        orders = c.fetchall()
+        conn.close()
+        
+        if not orders:
+            bot.send_message(message.chat.id, "Нет активных заказов!")
+            admin_panel(message)
+            return
+        
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for order in orders:
+            btn_text = f"Заказ #{order[0]} - @{order[2]} - {order[4]} ({order[5]} шт.)"
+            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"order_{order[0]}"))
+        bot.send_message(message.chat.id, "Активные заказы:", reply_markup=markup)
+
 @bot.message_handler(func=lambda message: message.text == "🔙 Назад")
 def back_to_admin_panel(message):
     if message.from_user.id in ADMIN_IDS:
@@ -379,6 +411,19 @@ def callback_handler(call):
     elif call.data.startswith('reply_to_'):
         question_id = int(call.data.split('_')[2])
         start_reply_process(call.message, question_id)
+    elif call.data.startswith('order_'):
+        if call.data.startswith('order_qty_'):
+            product_id, quantity = map(int, call.data.split('_')[2:])
+            confirm_order_quantity(call.message, product_id, quantity)
+        elif call.data.startswith('order_confirm_'):
+            product_id, quantity = map(int, call.data.split('_')[2:])
+            request_delivery_address(call.message, product_id, quantity)
+        elif call.data.startswith('order_'):
+            order_id = int(call.data.split('_')[1])
+            show_order_details(call.message, order_id)
+    elif call.data.startswith('pay_'):
+        order_id = int(call.data.split('_')[1])
+        send_payment_details(call.message, order_id)
 
 def show_product(message, category_id, position):
     conn = sqlite3.connect('shop.db')
@@ -533,6 +578,104 @@ def send_reply(message, question_id, user_id):
         
         bot.send_message(message.chat.id, "Ответ отправлен пользователю!")
         admin_panel(message)
+
+# Обработка заказа
+@bot.callback_query_handler(func=lambda call: call.data.startswith('order_') and len(call.data.split('_')) == 2)
+def start_order(call):
+    product_id = int(call.data.split('_')[1])
+    markup = types.InlineKeyboardMarkup(row_width=5)
+    for i in range(1, 6):
+        markup.add(types.InlineKeyboardButton(str(i), callback_data=f"order_qty_{product_id}_{i}"))
+    bot.edit_message_text(f"Выберите количество товара:", chat_id=call.message.chat.id, 
+                         message_id=call.message.message_id, reply_markup=markup)
+
+def confirm_order_quantity(message, product_id, quantity):
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("SELECT name FROM products WHERE id = ?", (product_id,))
+    product_name = c.fetchone()[0]
+    conn.close()
+    
+    markup = types.InlineKeyboardMarkup()
+    confirm_btn = types.InlineKeyboardButton("Оформить заказ", callback_data=f"order_confirm_{product_id}_{quantity}")
+    markup.add(confirm_btn)
+    
+    bot.edit_message_text(f"Вы выбрали '{product_name}' в количестве {quantity} шт. Подтвердите заказ:",
+                         chat_id=message.chat.id, message_id=message.message_id, reply_markup=markup)
+
+def request_delivery_address(message, product_id, quantity):
+    msg = bot.send_message(message.chat.id, "Введите адрес доставки:")
+    bot.register_next_step_handler(msg, lambda m: finalize_order(m, product_id, quantity))
+
+def finalize_order(message, product_id, quantity):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    address = message.text
+    
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("SELECT name FROM products WHERE id = ?", (product_id,))
+    product_name = c.fetchone()[0]
+    c.execute("INSERT INTO orders (user_id, username, product_id, product_name, quantity, address, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (user_id, username, product_id, product_name, quantity, address, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    order_id = c.lastrowid
+    c.execute("UPDATE users SET orders_count = orders_count + 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    
+    bot.send_message(message.chat.id, "Заказ успешно сформирован! Данные для оплаты сейчас отправим.")
+    
+    order_info = f"Новый заказ #{order_id}\nОт: @{username} (ID: {user_id})\nТовар: {product_name}\nКоличество: {quantity} шт.\nАдрес: {address}"
+    for admin_id in ADMIN_IDS:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("Отправить реквизиты", callback_data=f"pay_{order_id}"))
+        bot.send_message(admin_id, order_info, reply_markup=markup)
+
+def show_order_details(message, order_id):
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+    order = c.fetchone()
+    conn.close()
+    
+    order_info = (f"Заказ #{order[0]}\n"
+                  f"От: @{order[2]} (ID: {order[1]})\n"
+                  f"Товар: {order[4]}\n"
+                  f"Количество: {order[5]} шт.\n"
+                  f"Адрес: {order[6]}\n"
+                  f"Статус: {order[7]}\n"
+                  f"Время: {order[8]}")
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("Отправить реквизиты", callback_data=f"pay_{order_id}"))
+    bot.edit_message_text(order_info, chat_id=message.chat.id, message_id=message.message_id, reply_markup=markup)
+
+def send_payment_details(message, order_id):
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM orders WHERE id = ?", (order_id,))
+    user_id = c.fetchone()[0]
+    conn.close()
+    
+    msg = bot.send_message(message.chat.id, "Отправьте реквизиты для оплаты клиенту:")
+    bot.register_next_step_handler(msg, lambda m: send_payment_to_user(m, user_id, order_id))
+
+def send_payment_to_user(message, user_id, order_id):
+    if message.from_user.id in ADMIN_IDS:
+        if message.content_type == 'text':
+            bot.send_message(user_id, f"Реквизиты для оплаты вашего заказа #{order_id}:\n\n{message.text}")
+        elif message.content_type == 'photo':
+            bot.send_photo(user_id, message.photo[-1].file_id,
+                          caption=f"Реквизиты для оплаты вашего заказа #{order_id}:\n\n{message.caption or ''}")
+        
+        conn = sqlite3.connect('shop.db')
+        c = conn.cursor()
+        c.execute("UPDATE orders SET status = 'awaiting_payment' WHERE id = ?", (order_id,))
+        conn.commit()
+        conn.close()
+        
+        bot.send_message(message.chat.id, "Реквизиты отправлены клиенту!")
+        manage_orders(message)
 
 # Запуск бота
 bot.polling(none_stop=True)
