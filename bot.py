@@ -151,21 +151,209 @@ def show_categories(message):
     
     bot.send_message(message.chat.id, "Выберите категорию:", reply_markup=markup)
 
+# Админская панель
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    if message.from_user.id in ADMIN_IDS:
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+        btn1 = types.KeyboardButton("📊 Выгрузка пользователей")
+        btn2 = types.KeyboardButton("🏪 Управление магазином")
+        btn3 = types.KeyboardButton("📨 Рассылка")
+        btn4 = types.KeyboardButton("💬 Ответить пользователю")
+        markup.add(btn1, btn2, btn3, btn4)
+        bot.send_message(message.chat.id, "Панель администратора:", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "📊 Выгрузка пользователей")
+def export_users(message):
+    if message.from_user.id in ADMIN_IDS:
+        conn = sqlite3.connect('shop.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM users")
+        users = c.fetchall()
+        conn.close()
+        
+        csv_filename = 'users_report.csv'
+        with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['ID', 'Username', 'Дата регистрации', 'Количество заказов'])
+            for user in users:
+                writer.writerow([user[0], user[1], user[2], user[3]])
+        
+        with open(csv_filename, 'rb') as f:
+            bot.send_document(message.chat.id, f, caption="Выгрузка базы пользователей")
+        os.remove(csv_filename)
+
+@bot.message_handler(func=lambda message: message.text == "🏪 Управление магазином")
+def manage_shop(message):
+    if message.from_user.id in ADMIN_IDS:
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+        btn1 = types.KeyboardButton("➕ Добавить категорию")
+        btn2 = types.KeyboardButton("➖ Удалить категорию")
+        btn3 = types.KeyboardButton("➕ Добавить товар")
+        btn4 = types.KeyboardButton("➖ Удалить товар")
+        btn5 = types.KeyboardButton("✏️ Редактировать приветствие")
+        btn6 = types.KeyboardButton("🔙 Назад")
+        markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
+        bot.send_message(message.chat.id, "Управление магазином:", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "➕ Добавить категорию")
+def add_category(message):
+    if message.from_user.id in ADMIN_IDS:
+        msg = bot.send_message(message.chat.id, "Введите название новой категории:")
+        bot.register_next_step_handler(msg, save_category)
+
+def save_category(message):
+    if message.from_user.id in ADMIN_IDS:
+        category_name = message.text
+        conn = sqlite3.connect('shop.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO categories (name) VALUES (?)", (category_name,))
+        conn.commit()
+        conn.close()
+        bot.send_message(message.chat.id, f"Категория '{category_name}' добавлена!")
+        manage_shop(message)
+
+@bot.message_handler(func=lambda message: message.text == "➖ Удалить категорию")
+def delete_category(message):
+    if message.from_user.id in ADMIN_IDS:
+        conn = sqlite3.connect('shop.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM categories")
+        categories = c.fetchall()
+        conn.close()
+        
+        if not categories:
+            bot.send_message(message.chat.id, "Нет категорий для удаления!")
+            manage_shop(message)
+            return
+        
+        markup = types.InlineKeyboardMarkup()
+        for category in categories:
+            markup.add(types.InlineKeyboardButton(category[1], callback_data=f"del_cat_{category[0]}"))
+        bot.send_message(message.chat.id, "Выберите категорию для удаления:", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "➕ Добавить товар")
+def add_product_start(message):
+    if message.from_user.id in ADMIN_IDS:
+        conn = sqlite3.connect('shop.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM categories")
+        categories = c.fetchall()
+        conn.close()
+        
+        if not categories:
+            bot.send_message(message.chat.id, "Сначала добавьте хотя бы одну категорию!")
+            manage_shop(message)
+            return
+        
+        markup = types.InlineKeyboardMarkup()
+        for category in categories:
+            markup.add(types.InlineKeyboardButton(category[1], callback_data=f"prod_cat_{category[0]}"))
+        bot.send_message(message.chat.id, "Выберите категорию для нового товара:", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "➖ Удалить товар")
+def delete_product_start(message):
+    if message.from_user.id in ADMIN_IDS:
+        conn = sqlite3.connect('shop.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM categories")
+        categories = c.fetchall()
+        conn.close()
+        
+        if not categories:
+            bot.send_message(message.chat.id, "Нет категорий с товарами!")
+            manage_shop(message)
+            return
+        
+        markup = types.InlineKeyboardMarkup()
+        for category in categories:
+            markup.add(types.InlineKeyboardButton(category[1], callback_data=f"del_prod_cat_{category[0]}"))
+        bot.send_message(message.chat.id, "Выберите категорию для удаления товара:", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "✏️ Редактировать приветствие")
+def edit_welcome_message(message):
+    if message.from_user.id in ADMIN_IDS:
+        msg = bot.send_message(message.chat.id, "Отправьте новый текст приветственного сообщения и фото (если нужно)")
+        bot.register_next_step_handler(msg, save_welcome_message)
+
+def save_welcome_message(message):
+    if message.from_user.id in ADMIN_IDS:
+        conn = sqlite3.connect('shop.db')
+        c = conn.cursor()
+        
+        if message.content_type == 'photo':
+            file_info = bot.get_file(message.photo[-1].file_id)
+            downloaded_file = bot.download_file(file_info.file_path)
+            photo_path = f'welcome_photos/welcome_{datetime.now().strftime("%Y%m%d_%H%M%S")}.jpg'
+            os.makedirs('welcome_photos', exist_ok=True)
+            with open(photo_path, 'wb') as new_file:
+                new_file.write(downloaded_file)
+            c.execute("INSERT INTO welcome_message (message_text, photo_path) VALUES (?, ?)",
+                     (message.caption or "Добро пожаловать в наш магазин!", photo_path))
+        else:
+            c.execute("INSERT INTO welcome_message (message_text, photo_path) VALUES (?, ?)",
+                     (message.text, "default_welcome.jpg"))
+        
+        conn.commit()
+        conn.close()
+        bot.send_message(message.chat.id, "Приветственное сообщение обновлено!")
+        manage_shop(message)
+
+@bot.message_handler(func=lambda message: message.text == "📨 Рассылка")
+def broadcast_message(message):
+    if message.from_user.id in ADMIN_IDS:
+        msg = bot.send_message(message.chat.id, "Отправьте сообщение для рассылки (текст или фото)")
+        bot.register_next_step_handler(msg, process_broadcast)
+
+def process_broadcast(message):
+    if message.from_user.id in ADMIN_IDS:
+        conn = sqlite3.connect('shop.db')
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM users")
+        users = c.fetchall()
+        conn.close()
+        
+        for user in users:
+            try:
+                if message.content_type == 'text':
+                    bot.send_message(user[0], message.text)
+                elif message.content_type == 'photo':
+                    bot.send_photo(user[0], message.photo[-1].file_id, caption=message.caption)
+            except:
+                continue
+        
+        bot.send_message(message.chat.id, "Рассылка выполнена!")
+        admin_panel(message)
+
+@bot.message_handler(func=lambda message: message.text == "💬 Ответить пользователю")
+def show_pending_questions(message):
+    if message.from_user.id in ADMIN_IDS:
+        conn = sqlite3.connect('shop.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM questions WHERE status = 'pending'")
+        questions = c.fetchall()
+        conn.close()
+        
+        if not questions:
+            bot.send_message(message.chat.id, "Нет неотвеченных вопросов!")
+            admin_panel(message)
+            return
+        
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for q in questions:
+            btn_text = f"@{q[2]} ({q[6][:16]})"
+            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"reply_to_{q[0]}"))
+        bot.send_message(message.chat.id, "Неотвеченные вопросы:", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "🔙 Назад")
+def back_to_admin_panel(message):
+    if message.from_user.id in ADMIN_IDS:
+        admin_panel(message)
+
 # Обработка callback-запросов
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
-    if call.data == "export_users":
-        export_users(call.message)
-    elif call.data == "manage_shop":
-        manage_shop(call.message)
-    elif call.data == "broadcast":
-        broadcast_message(call.message)
-    elif call.data == "reply_user":
-        show_pending_questions(call.message)
-    elif call.data.startswith("reply_to_"):
-        question_id = int(call.data.split("_")[2])
-        start_reply_process(call.message, question_id)
-    elif call.data.startswith('cat_'):
+    if call.data.startswith('cat_'):
         category_id = int(call.data.split('_')[1])
         show_product(call.message, category_id, 0)
     elif call.data.startswith('next'):
@@ -174,10 +362,23 @@ def callback_handler(call):
     elif call.data.startswith('prev'):
         category_id, current_pos = map(int, call.data.split('_')[1:])
         show_product(call.message, category_id, current_pos - 1)
-    elif call.data == "add_category":
-        add_category(call.message)
-    elif call.data == "add_product":
-        add_product_start(call.message)
+    elif call.data.startswith('prod_cat_'):
+        category_id = int(call.data.split('_')[2])
+        msg = bot.send_message(call.message.chat.id, 
+                             "Отправьте данные о товаре в формате:\nНазвание\nОписание\nФото")
+        bot.register_next_step_handler(msg, lambda m: save_product(m, category_id))
+    elif call.data.startswith('del_cat_'):
+        category_id = int(call.data.split('_')[2])
+        delete_category_confirm(call.message, category_id)
+    elif call.data.startswith('del_prod_cat_'):
+        category_id = int(call.data.split('_')[3])
+        show_products_for_deletion(call.message, category_id)
+    elif call.data.startswith('del_prod_'):
+        product_id = int(call.data.split('_')[2])
+        delete_product_confirm(call.message, product_id)
+    elif call.data.startswith('reply_to_'):
+        question_id = int(call.data.split('_')[2])
+        start_reply_process(call.message, question_id)
 
 def show_product(message, category_id, position):
     conn = sqlite3.connect('shop.db')
@@ -213,93 +414,6 @@ def show_product(message, category_id, position):
             reply_markup=markup
         )
 
-# Админские команды
-@bot.message_handler(commands=['admin'])
-def admin_panel(message):
-    if message.from_user.id in ADMIN_IDS:
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        btn1 = types.InlineKeyboardButton("📊 Выгрузка пользователей", callback_data="export_users")
-        btn2 = types.InlineKeyboardButton("🏪 Управление магазином", callback_data="manage_shop")
-        btn3 = types.InlineKeyboardButton("📨 Рассылка", callback_data="broadcast")
-        btn4 = types.InlineKeyboardButton("💬 Ответить пользователю", callback_data="reply_user")
-        markup.add(btn1, btn2, btn3, btn4)
-        bot.send_message(message.chat.id, "Панель администратора:", reply_markup=markup)
-
-def export_users(message):
-    if message.from_user.id in ADMIN_IDS:
-        conn = sqlite3.connect('shop.db')
-        c = conn.cursor()
-        c.execute("SELECT * FROM users")
-        users = c.fetchall()
-        conn.close()
-        
-        csv_filename = 'users_report.csv'
-        with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(['ID', 'Username', 'Дата регистрации', 'Количество заказов'])
-            for user in users:
-                writer.writerow([user[0], user[1], user[2], user[3]])
-        
-        with open(csv_filename, 'rb') as f:
-            bot.send_document(message.chat.id, f, caption="Выгрузка базы пользователей")
-        os.remove(csv_filename)
-
-def manage_shop(message):
-    if message.from_user.id in ADMIN_IDS:
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        btn1 = types.InlineKeyboardButton("➕ Категория", callback_data="add_category")
-        btn2 = types.InlineKeyboardButton("➖ Категория", callback_data="del_category")
-        btn3 = types.InlineKeyboardButton("➕ Товар", callback_data="add_product")
-        btn4 = types.InlineKeyboardButton("➖ Товар", callback_data="del_product")
-        btn5 = types.InlineKeyboardButton("✏️ Приветствие", callback_data="edit_welcome")
-        markup.add(btn1, btn2, btn3, btn4, btn5)
-        bot.edit_message_text("Управление магазином:", message.chat.id, message.message_id, reply_markup=markup)
-
-# Добавление категории
-def add_category(message):
-    if message.from_user.id in ADMIN_IDS:
-        msg = bot.send_message(message.chat.id, "Введите название новой категории:")
-        bot.register_next_step_handler(msg, save_category)
-
-def save_category(message):
-    if message.from_user.id in ADMIN_IDS:
-        category_name = message.text
-        conn = sqlite3.connect('shop.db')
-        c = conn.cursor()
-        c.execute("INSERT INTO categories (name) VALUES (?)", (category_name,))
-        conn.commit()
-        conn.close()
-        bot.send_message(message.chat.id, f"Категория '{category_name}' добавлена!")
-        manage_shop(message)
-
-# Добавление товара
-def add_product_start(message):
-    if message.from_user.id in ADMIN_IDS:
-        conn = sqlite3.connect('shop.db')
-        c = conn.cursor()
-        c.execute("SELECT * FROM categories")
-        categories = c.fetchall()
-        conn.close()
-        
-        if not categories:
-            bot.send_message(message.chat.id, "Сначала добавьте хотя бы одну категорию!")
-            manage_shop(message)
-            return
-        
-        markup = types.InlineKeyboardMarkup()
-        for category in categories:
-            markup.add(types.InlineKeyboardButton(category[1], callback_data=f"prod_cat_{category[0]}"))
-        
-        bot.send_message(message.chat.id, "Выберите категорию для нового товара:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('prod_cat_'))
-def add_product_category_selected(call):
-    if call.from_user.id in ADMIN_IDS:
-        category_id = int(call.data.split('_')[2])
-        msg = bot.send_message(call.message.chat.id, 
-                             "Отправьте данные о товаре в формате:\nНазвание\nОписание\nФото")
-        bot.register_next_step_handler(msg, lambda m: save_product(m, category_id))
-
 def save_product(message, category_id):
     if message.from_user.id in ADMIN_IDS:
         if message.content_type != 'photo':
@@ -326,24 +440,60 @@ def save_product(message, category_id):
         bot.send_message(message.chat.id, f"Товар '{name}' добавлен в категорию!")
         manage_shop(message)
 
-def show_pending_questions(message):
-    if message.from_user.id in ADMIN_IDS:
-        conn = sqlite3.connect('shop.db')
-        c = conn.cursor()
-        c.execute("SELECT * FROM questions WHERE status = 'pending'")
-        questions = c.fetchall()
-        conn.close()
-        
-        if not questions:
-            bot.edit_message_text("Нет неотвеченных вопросов", message.chat.id, message.message_id)
-            return
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for q in questions:
-            btn_text = f"@{q[2]} ({q[6][:16]})"
-            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"reply_to_{q[0]}"))
-        
-        bot.edit_message_text("Неотвеченные вопросы:", message.chat.id, message.message_id, reply_markup=markup)
+def delete_category_confirm(message, category_id):
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("SELECT name FROM categories WHERE id = ?", (category_id,))
+    category_name = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM products WHERE category_id = ?", (category_id,))
+    products_count = c.fetchone()[0]
+    conn.close()
+    
+    if products_count > 0:
+        bot.send_message(message.chat.id, f"Нельзя удалить категорию '{category_name}', так как в ней есть товары ({products_count})!")
+        manage_shop(message)
+        return
+    
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+    conn.commit()
+    conn.close()
+    
+    bot.send_message(message.chat.id, f"Категория '{category_name}' удалена!")
+    manage_shop(message)
+
+def show_products_for_deletion(message, category_id):
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM products WHERE category_id = ?", (category_id,))
+    products = c.fetchall()
+    conn.close()
+    
+    if not products:
+        bot.send_message(message.chat.id, "В этой категории нет товаров!")
+        manage_shop(message)
+        return
+    
+    markup = types.InlineKeyboardMarkup()
+    for product in products:
+        markup.add(types.InlineKeyboardButton(product[2], callback_data=f"del_prod_{product[0]}"))
+    bot.send_message(message.chat.id, "Выберите товар для удаления:", reply_markup=markup)
+
+def delete_product_confirm(message, product_id):
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("SELECT name, photo FROM products WHERE id = ?", (product_id,))
+    product = c.fetchone()
+    c.execute("DELETE FROM products WHERE id = ?", (product_id,))
+    conn.commit()
+    conn.close()
+    
+    if os.path.exists(product[1]):
+        os.remove(product[1])
+    
+    bot.send_message(message.chat.id, f"Товар '{product[0]}' удален!")
+    manage_shop(message)
 
 def start_reply_process(message, question_id):
     conn = sqlite3.connect('shop.db')
@@ -353,8 +503,7 @@ def start_reply_process(message, question_id):
     conn.close()
     
     if question[4] == 'text':
-        bot.edit_message_text(f"Вопрос от @{question[2]} (ID: {question[1]}):\n{question[3]}\n\nНапишите ответ:",
-                            message.chat.id, message.message_id)
+        bot.send_message(message.chat.id, f"Вопрос от @{question[2]} (ID: {question[1]}):\n{question[3]}\n\nНапишите ответ:")
     elif question[4] == 'photo':
         bot.send_photo(message.chat.id, question[5], 
                       caption=f"Вопрос от @{question[2]} (ID: {question[1]}):\n{question[3]}\n\nНапишите ответ:")
