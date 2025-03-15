@@ -374,7 +374,7 @@ def manage_orders(message):
         markup = types.InlineKeyboardMarkup(row_width=1)
         for order in orders:
             btn_text = f"Заказ #{order[0]} - @{order[2]} - {order[4]} ({order[5]} шт.)"
-            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"order_{order[0]}"))
+            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"manage_order_{order[0]}"))
         bot.send_message(message.chat.id, "Активные заказы:", reply_markup=markup)
 
 @bot.message_handler(func=lambda message: message.text == "🔙 Назад")
@@ -388,13 +388,13 @@ def callback_handler(call):
     if call.data.startswith('cat_'):
         category_id = int(call.data.split('_')[1])
         show_product(call.message, category_id, 0)
-    elif call.data.startswith('next'):
+    elif call.data.startswith('next_'):
         category_id, current_pos = map(int, call.data.split('_')[1:])
         show_product(call.message, category_id, current_pos + 1)
-    elif call.data.startswith('prev'):
+    elif call.data.startswith('prev_'):
         category_id, current_pos = map(int, call.data.split('_')[1:])
         show_product(call.message, category_id, current_pos - 1)
-    elif call.data.startswith('order_'):  # Обработка всех callback, связанных с заказом
+    elif call.data.startswith('order_'):  # Обработка заказа
         parts = call.data.split('_')
         if len(parts) == 2:  # Начало заказа: order_{product_id}
             product_id = int(parts[1])
@@ -402,12 +402,12 @@ def callback_handler(call):
         elif parts[1] == 'qty':  # Выбор количества: order_qty_{product_id}_{quantity}
             product_id, quantity = map(int, parts[2:])
             confirm_order_quantity(call.message, product_id, quantity)
-        elif parts[1] == 'confirm':  # Подтверждение заказа: order_confirm_{product_id}_{quantity}
+        elif parts[1] == 'confirm':  # Подтверждение: order_confirm_{product_id}_{quantity}
             product_id, quantity = map(int, parts[2:])
             request_delivery_address(call.message, product_id, quantity)
-        elif len(parts) == 2:  # Управление заказами: order_{order_id}
-            order_id = int(parts[1])
-            show_order_details(call.message, order_id)
+    elif call.data.startswith('manage_order_'):  # Управление заказами
+        order_id = int(call.data.split('_')[2])
+        show_order_details(call.message, order_id)
     elif call.data.startswith('pay_'):
         order_id = int(call.data.split('_')[1])
         send_payment_details(call.message, order_id)
@@ -437,9 +437,7 @@ def show_product(message, category_id, position):
     conn.close()
 
     if not products:
-        bot.edit_message_text("В данной категории пока нет товаров",
-                            message.chat.id,
-                            message.message_id)
+        bot.send_message(message.chat.id, "В данной категории пока нет товаров")
         return
 
     if position < 0:
@@ -456,10 +454,10 @@ def show_product(message, category_id, position):
     markup.add(prev_btn, order_btn, next_btn)
 
     with open(product[4], 'rb') as photo:
-        bot.edit_message_media(
-            media=types.InputMediaPhoto(photo, caption=f"{product[2]}\n\n{product[3]}"),
+        bot.send_photo(
             chat_id=message.chat.id,
-            message_id=message.message_id,
+            photo=photo,
+            caption=f"{product[2]}\n\n{product[3]}",
             reply_markup=markup
         )
 
@@ -587,9 +585,14 @@ def start_order(call, product_id):
     conn = sqlite3.connect('shop.db')
     c = conn.cursor()
     c.execute("SELECT name FROM products WHERE id = ?", (product_id,))
-    product_name = c.fetchone()[0]
+    result = c.fetchone()
     conn.close()
 
+    if not result:
+        bot.send_message(call.message.chat.id, "Ошибка: товар не найден!")
+        return
+
+    product_name = result[0]
     markup = types.InlineKeyboardMarkup(row_width=5)
     for i in range(1, 6):
         markup.add(types.InlineKeyboardButton(str(i), callback_data=f"order_qty_{product_id}_{i}"))
