@@ -130,6 +130,7 @@ def process_question(message):
         file_id = message.document.file_id
         content = message.caption or ''
     else:
+        bot.send_message(message.chat.id, "Пожалуйста, отправьте текст, фото или документ.")
         return
 
     c.execute("INSERT INTO questions (user_id, username, question_text, question_type, file_id, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
@@ -331,7 +332,8 @@ def process_broadcast(message):
                     bot.send_message(user[0], message.text)
                 elif message.content_type == 'photo':
                     bot.send_photo(user[0], message.photo[-1].file_id, caption=message.caption)
-            except:
+            except Exception as e:
+                print(f"Ошибка при отправке пользователю {user[0]}: {e}")
                 continue
 
         bot.send_message(message.chat.id, "Рассылка выполнена!")
@@ -374,7 +376,7 @@ def manage_orders(message):
         markup = types.InlineKeyboardMarkup(row_width=1)
         for order in orders:
             btn_text = f"Заказ #{order[0]} - @{order[2]} - {order[4]} ({order[5]} шт.)"
-            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"order_{order[0]}"))
+            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"manage_order_{order[0]}"))
         bot.send_message(message.chat.id, "Активные заказы:", reply_markup=markup)
 
 @bot.message_handler(func=lambda message: message.text == "🔙 Назад")
@@ -385,49 +387,54 @@ def back_to_admin_panel(message):
 # Обработка callback-запросов
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
-    if call.data.startswith('cat_'):
-        category_id = int(call.data.split('_')[1])
-        show_product(call.message, category_id, 0)
-    elif call.data.startswith('next'):
-        category_id, current_pos = map(int, call.data.split('_')[1:])
-        show_product(call.message, category_id, current_pos + 1)
-    elif call.data.startswith('prev'):
-        category_id, current_pos = map(int, call.data.split('_')[1:])
-        show_product(call.message, category_id, current_pos - 1)
-    elif call.data.startswith('order_'):  # Обработка всех callback, связанных с заказом
-        parts = call.data.split('_')
-        if len(parts) == 2:  # Начало заказа: order_{product_id}
-            product_id = int(parts[1])
-            start_order(call, product_id)
-        elif parts[1] == 'qty':  # Выбор количества: order_qty_{product_id}_{quantity}
-            product_id, quantity = map(int, parts[2:])
-            confirm_order_quantity(call.message, product_id, quantity)
-        elif parts[1] == 'confirm':  # Подтверждение заказа: order_confirm_{product_id}_{quantity}
-            product_id, quantity = map(int, parts[2:])
-            request_delivery_address(call.message, product_id, quantity)
-        elif len(parts) == 2:  # Управление заказами: order_{order_id}
-            order_id = int(parts[1])
+    print(f"Callback received: {call.data}")  # Отладочный вывод
+    try:
+        if call.data.startswith('cat_'):
+            category_id = int(call.data.split('_')[1])
+            show_product(call.message, category_id, 0)
+        elif call.data.startswith('next_'):
+            category_id, current_pos = map(int, call.data.split('_')[1:])
+            show_product(call.message, category_id, current_pos + 1)
+        elif call.data.startswith('prev_'):
+            category_id, current_pos = map(int, call.data.split('_')[1:])
+            show_product(call.message, category_id, current_pos - 1)
+        elif call.data.startswith('order_'):
+            parts = call.data.split('_')
+            if len(parts) == 2:  # Начало заказа: order_{product_id}
+                product_id = int(parts[1])
+                start_order(call, product_id)
+            elif parts[1] == 'qty':  # Выбор количества: order_qty_{product_id}_{quantity}
+                product_id, quantity = map(int, parts[2:])
+                confirm_order_quantity(call.message, product_id, quantity)
+            elif parts[1] == 'confirm':  # Подтверждение заказа: order_confirm_{product_id}_{quantity}
+                product_id, quantity = map(int, parts[2:])
+                request_delivery_address(call.message, product_id, quantity)
+        elif call.data.startswith('manage_order_'):
+            order_id = int(call.data.split('_')[2])
             show_order_details(call.message, order_id)
-    elif call.data.startswith('pay_'):
-        order_id = int(call.data.split('_')[1])
-        send_payment_details(call.message, order_id)
-    elif call.data.startswith('prod_cat_'):
-        category_id = int(call.data.split('_')[2])
-        msg = bot.send_message(call.message.chat.id, 
-                             "Отправьте данные о товаре в формате:\nНазвание\nОписание\nФото")
-        bot.register_next_step_handler(msg, lambda m: save_product(m, category_id))
-    elif call.data.startswith('del_cat_'):
-        category_id = int(call.data.split('_')[2])
-        delete_category_confirm(call.message, category_id)
-    elif call.data.startswith('del_prod_cat_'):
-        category_id = int(call.data.split('_')[3])
-        show_products_for_deletion(call.message, category_id)
-    elif call.data.startswith('del_prod_'):
-        product_id = int(call.data.split('_')[2])
-        delete_product_confirm(call.message, product_id)
-    elif call.data.startswith('reply_to_'):
-        question_id = int(call.data.split('_')[2])
-        start_reply_process(call.message, question_id)
+        elif call.data.startswith('pay_'):
+            order_id = int(call.data.split('_')[1])
+            send_payment_details(call.message, order_id)
+        elif call.data.startswith('prod_cat_'):
+            category_id = int(call.data.split('_')[2])
+            msg = bot.send_message(call.message.chat.id, 
+                                 "Отправьте данные о товаре в формате:\nНазвание\nОписание\nФото")
+            bot.register_next_step_handler(msg, lambda m: save_product(m, category_id))
+        elif call.data.startswith('del_cat_'):
+            category_id = int(call.data.split('_')[2])
+            delete_category_confirm(call.message, category_id)
+        elif call.data.startswith('del_prod_cat_'):
+            category_id = int(call.data.split('_')[2])
+            show_products_for_deletion(call.message, category_id)
+        elif call.data.startswith('del_prod_'):
+            product_id = int(call.data.split('_')[2])
+            delete_product_confirm(call.message, product_id)
+        elif call.data.startswith('reply_to_'):
+            question_id = int(call.data.split('_')[2])
+            start_reply_process(call.message, question_id)
+    except Exception as e:
+        print(f"Ошибка в callback_handler: {e}")
+        bot.send_message(call.message.chat.id, "Произошла ошибка, попробуйте позже.")
 
 def show_product(message, category_id, position):
     conn = sqlite3.connect('shop.db')
@@ -687,4 +694,5 @@ def send_payment_to_user(message, user_id, order_id):
         manage_orders(message)
 
 # Запуск бота
-bot.polling(none_stop=True)
+if __name__ == "__main__":
+    bot.polling(none_stop=True)
