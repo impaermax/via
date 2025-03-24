@@ -4,6 +4,13 @@ import sqlite3
 from datetime import datetime
 import os
 import csv
+from openai import OpenAI
+
+
+client = OpenAI(
+    api_key='sk-k5lFTaLbtMHtLjCINnkDRXiMpRumJkb0',
+    base_url="https://api.proxyapi.ru/openai/v1",
+)
 
 # Инициализация бота
 bot = telebot.TeleBot('7754190602:AAFvBqgVIikoskm_Xa5WVUBnw9KNwVY-Jqk')
@@ -693,6 +700,221 @@ def send_payment_to_user(message, user_id, order_id):
         bot.send_message(message.chat.id, "Реквизиты отправлены клиенту!")
         manage_orders(message)
 
-# Запуск бота
+
+# ... (оставьте весь существующий код инициализации базы данных и других функций)
+
+# Функция для получения ответа от нейросети
+def get_ai_response(prompt):
+    try:
+        # Добавляем контекст из базы знаний
+        with open("knowledge_base.txt", "r", encoding="utf-8") as f:
+            knowledge_base = f.read()
+        
+        system_prompt = (
+            "Ты полезный ассистент интернет-магазина. Отвечай на вопросы клиентов вежливо и профессионально. "
+            "Используй следующую информацию о магазине:\n\n"
+            f"{knowledge_base}\n\n"
+            "Если ответ не содержится в документе, отвечай на основе своих знаний."
+        )
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=500
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Ошибка при запросе к нейросети: {e}")
+        return "Извините, возникла ошибка при обработке вашего запроса."
+
+# Обработка вопроса с использованием нейросети
+@bot.message_handler(func=lambda message: message.text == "Задать вопрос")
+def ask_question(message):
+    msg = bot.send_message(message.chat.id, 
+                           "Задайте ваш вопрос или выберите тип обращения:", 
+                           reply_markup=get_question_type_keyboard())
+    bot.register_next_step_handler(msg, process_question)
+
+def get_question_type_keyboard():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    btn1 = types.KeyboardButton("Общий вопрос")
+    btn2 = types.KeyboardButton("Вопрос по товару")
+    btn3 = types.KeyboardButton("Отмена")
+    markup.add(btn1, btn2, btn3)
+    return markup
+
+def process_question(message):
+    if message.text == "Отмена":
+        start(message)
+        return
+    
+    question_type = message.text
+    msg = bot.send_message(message.chat.id, 
+                           "Пожалуйста, опишите ваш вопрос подробнее:")
+    bot.register_next_step_handler(msg, lambda m: handle_question(m, question_type))
+
+def handle_question(message, question_type):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    user_question = message.text
+    
+    # Получаем ответ от нейросети
+    ai_response = get_ai_response(user_question)
+    
+    # Сохраняем вопрос в базу данных
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO questions (user_id, username, question_text, question_type, timestamp) VALUES (?, ?, ?, ?, ?)",
+              (user_id, username, user_question, question_type, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+    
+    # Отправляем ответ пользователю
+    bot.send_message(message.chat.id, ai_response)
+    
+    # Уведомляем администраторов
+    for admin_id in ADMIN_IDS:
+        bot.send_message(admin_id, 
+                         f"Новый вопрос от @{username} (ID: {user_id}) [{question_type}]:\n{user_question}\n\nОтвет ИИ:\n{ai_response}")
+
+# Модифицированный процесс заказа с участием ИИ
+@bot.callback_query_handler(func=lambda call: call.data.startswith('order_'))
+def handle_order(call):
+    parts = call.data.split('_')
+    if len(parts) == 2:  # Начало заказа
+        product_id = int(parts[1])
+        start_order_with_ai(call, product_id)
+    elif parts[1] == 'qty':  # Выбор количества
+        product_id, quantity = map(int, parts[2:])
+        confirm_order_quantity_with_ai(call.message, product_id, quantity)
+    elif parts[1] == 'confirm':  # Подтверждение заказа
+        product_id, quantity = map(int, parts[2:])
+        request_delivery_address_with_ai(call.message, product_id, quantity)
+
+def start_order_with_ai(call, product_id):
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("SELECT name FROM products WHERE id = ?", (product_id,))
+    product_name = c.fetchone()[0]
+    conn.close()
+    
+    # Спрашиваем у ИИ как лучше уточнить детали
+    ai_response = get_ai_response(f"Пользователь хочет заказать {product_name}. Как лучше уточнить количество?")
+    
+    markup = types.InlineKeyboardMarkup(row_width=5)
+    for i in range(1, 6):
+        markup.add(types.InlineKeyboardButton(str(i), callback_data=f"order_qty_{product_id}_{i}"))
+    
+    bot.edit_message_text(ai_response,
+                          chat_id=call.message.chat.id,
+                          message_id=call.message.message_id,
+                          reply_markup=markup)
+
+def confirm_order_quantity_with_ai(message, product_id, quantity):
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("SELECT name FROM products WHERE id = ?", (product_id,))
+    product_name = c.fetchone()[0]
+    conn.close()
+    
+    # Спрашиваем у ИИ как лучше подтвердить заказ
+    ai_response = get_ai_response(f"Пользователь выбрал {quantity} шт. товара {product_name}. Как лучше подтвердить заказ?")
+    
+    markup = types.InlineKeyboardMarkup()
+    confirm_btn = types.InlineKeyboardButton("Оформить заказ", callback_data=f"order_confirm_{product_id}_{quantity}")
+    markup.add(confirm_btn)
+    
+    bot.edit_message_text(ai_response,
+                          chat_id=message.chat.id,
+                          message_id=message.message_id,
+                          reply_markup=markup)
+
+def request_delivery_address_with_ai(message, product_id, quantity):
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    c.execute("SELECT name FROM products WHERE id = ?", (product_id,))
+    product_name = c.fetchone()[0]
+    conn.close()
+    
+    # Спрашиваем у ИИ как лучше запросить адрес
+    ai_response = get_ai_response(f"Пользователь заказал {quantity} шт. товара {product_name}. Как лучше запросить адрес доставки?")
+    
+    msg = bot.send_message(message.chat.id, ai_response)
+    bot.register_next_step_handler(msg, lambda m: finalize_order_with_ai(m, product_id, quantity))
+
+def finalize_order_with_ai(message, product_id, quantity):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    address = message.text
+    conn = sqlite3.connect('shop.db')
+    c = conn.cursor()
+    
+    # Получаем название товара
+    c.execute("SELECT name FROM products WHERE id = ?", (product_id,))
+    product_name = c.fetchone()[0]
+    
+    # Сохраняем заказ в базу данных
+    c.execute("INSERT INTO orders (user_id, username, product_id, product_name, quantity, address, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (user_id, username, product_id, product_name, quantity, address, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    order_id = c.lastrowid
+    
+    # Обновляем счетчик заказов пользователя
+    c.execute("UPDATE users SET orders_count = orders_count + 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    
+    # Спрашиваем у ИИ как лучше оформить подтверждение заказа
+    order_summary = (
+        f"Ваш заказ:\n"
+        f"Товар: {product_name}\n"
+        f"Количество: {quantity} шт.\n"
+        f"Адрес доставки: {address}"
+    )
+    ai_response = get_ai_response(f"Подтверди заказ:\n{order_summary}")
+    
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn1 = types.KeyboardButton("Да")
+    btn2 = types.KeyboardButton("Нет")
+    markup.add(btn1, btn2)
+    
+    msg = bot.send_message(message.chat.id, ai_response, reply_markup=markup)
+    bot.register_next_step_handler(msg, lambda m: confirm_final_order(m, order_id, order_summary))
+
+def confirm_final_order(message, order_id, order_summary):
+    if message.text.lower() == "да":
+        user_id = message.from_user.id
+        
+        # Уведомляем администраторов
+        for admin_id in ADMIN_IDS:
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("Отправить реквизиты", callback_data=f"pay_{order_id}"))
+            bot.send_message(admin_id, f"Новый заказ #{order_id}\n{order_summary}", reply_markup=markup)
+        
+        # Спрашиваем у ИИ как лучше сообщить реквизиты
+        payment_info = get_ai_response("Предоставь реквизиты для оплаты заказа")
+        bot.send_message(message.chat.id, payment_info)
+        
+    else:
+        bot.send_message(message.chat.id, "Заказ отменён.")
+
+# Обработка оплаты
+@bot.message_handler(func=lambda message: "оплатил" in message.text.lower())
+def process_payment(message):
+    user_id = message.from_user.id
+    
+    # Спрашиваем у ИИ как лучше подтвердить оплату
+    confirmation_message = get_ai_response("Подтверди получение оплаты от клиента")
+    
+    # Уведомляем администраторов
+    for admin_id in ADMIN_IDS:
+        bot.send_message(admin_id, 
+                         f"Пользователь @{message.from_user.username} (ID: {user_id}) сообщил об оплате.\n\n{confirmation_message}")
+    
+    bot.send_message(message.chat.id, confirmation_message)
+
+# Основной запуск бота
 if __name__ == "__main__":
     bot.polling(none_stop=True)
